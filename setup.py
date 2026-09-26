@@ -5,7 +5,7 @@ setup(
     version='1.0',
     py_modules=['vcutter'],
     install_requires=[
-        'yt-dlp',
+        'yt-dlp[default]',
         'argparse'
     ],
     entry_points={

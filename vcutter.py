@@ -6,9 +6,52 @@ import argparse
 from datetime import timedelta
 import glob
 
+# YouTube blocks unsigned media URLs with HTTP 403 unless a JS runtime
+# solves the player challenge. Deno is yt-dlp's default; Node is enabled
+# because it is often already installed and must be opted in explicitly.
+YDL_BASE_OPTS = {
+    'format': 'bestvideo+bestaudio',
+    'noplaylist': True,
+    'js_runtimes': {
+        'deno': {},
+        'node': {},
+    },
+}
+
 def converter_hhmmss_para_segundos(tempo_str):
     h, m, s = tempo_str.split(':')
     return int(h) * 3600 + int(m) * 60 + int(s)
+
+def formatar_segundos_para_hhmmss(total_segundos):
+    # FFmpeg rejects HH:MM:SS when SS is 60 or more (for example 00:01:274).
+    total_segundos = int(total_segundos)
+    horas, resto = divmod(total_segundos, 3600)
+    minutos, segundos = divmod(resto, 60)
+    return f"{horas:02d}:{minutos:02d}:{segundos:02d}"
+
+def duracao_midia_segundos(caminho):
+    resultado = subprocess.run(
+        [
+            'ffprobe', '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            caminho,
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    return float(resultado.stdout.strip())
+
+def duracao_midia_segundos(caminho):
+    resultado = subprocess.run(
+        [
+            'ffprobe', '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            caminho,
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    return float(resultado.stdout.strip())
 
 def main():
     parser = argparse.ArgumentParser(description="Corte vídeos do YouTube")
@@ -38,6 +81,12 @@ def main():
     else:
         tempo_inicio_segundos = converter_hhmmss_para_segundos(tempo_inicio)
 
+    tempo_inicio_ffmpeg = formatar_segundos_para_hhmmss(tempo_inicio_segundos)
+    campos_inicio = tempo_inicio.split(':')
+    if len(campos_inicio) == 3 and campos_inicio[-1].isdigit() and int(campos_inicio[-1]) >= 60:
+        print(f"Tempo inicial normalizado para {tempo_inicio_ffmpeg}")
+    tempo_inicio = tempo_inicio_ffmpeg
+
     # Calcula a duração do corte
     if tempo_final != "00:00:00":
         tempo_final_segundos = converter_hhmmss_para_segundos(tempo_final)
@@ -50,7 +99,7 @@ def main():
 
     print(f"Extraindo informações do vídeo: {url_do_video}")
     # Define as opções para o download
-    with youtube_dl.YoutubeDL({'format': 'bestvideo+bestaudio', 'noplaylist': True}) as ydl:
+    with youtube_dl.YoutubeDL(YDL_BASE_OPTS) as ydl:
         info_dict = ydl.extract_info(url_do_video, download=False)
         video_title = info_dict.get('title', None)
         print(f"Título do vídeo: {video_title}")
@@ -59,8 +108,8 @@ def main():
         video_path_pattern = os.path.join(diretorio_brutos, f"{titulo_sanitizado}.*")
 
     ydl_opts = {
-        'format': 'bestvideo+bestaudio',
-        'outtmpl': os.path.join(diretorio_brutos, f"{titulo_sanitizado}.%(ext)s")
+        **YDL_BASE_OPTS,
+        'outtmpl': os.path.join(diretorio_brutos, f"{titulo_sanitizado}.%(ext)s"),
     }
 
     if not glob.glob(video_path_pattern):
@@ -84,6 +133,16 @@ def main():
     print(f"Verificando o caminho do arquivo de entrada: {video_path_sanitized}")
     if not os.path.exists(video_path_sanitized):
         raise FileNotFoundError(f"Arquivo de vídeo não encontrado: {video_path_sanitized}")
+
+    try:
+        duracao_video = duracao_midia_segundos(video_path_sanitized)
+    except (subprocess.CalledProcessError, ValueError, FileNotFoundError):
+        duracao_video = None
+    if duracao_video is not None and tempo_inicio_segundos >= duracao_video:
+        fim = formatar_segundos_para_hhmmss(int(duracao_video))
+        raise ValueError(
+            f"Erro: o tempo inicial {tempo_inicio} está depois do fim do vídeo ({fim})."
+        )
 
     # Monta o comando FFmpeg com ou sem a duração do corte
     ffmpeg_command = [
